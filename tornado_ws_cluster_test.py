@@ -5,14 +5,15 @@ Created on Apr 1, 2016
 
 @author: Guijie Wang / 王桂杰
 '''
+import time
+import functools
+import json
+
 from tornado import gen
 from tornado import httpclient
 from tornado import httputil
 from tornado import ioloop
 from tornado import websocket
-
-import functools
-import json
 
 APPLICATION_JSON = 'application/json'
 
@@ -115,7 +116,7 @@ class RTCWebSocketClient(WebSocketClient):
            'to': 'Peter', 'body': 'Hello, Peter'}
     hb_msg = {'type': 'hb'}  # hearbeat
 
-    heartbeat_interval_in_secs = 3
+    heartbeat_interval = 3
 
     def __init__(self, io_loop=None,
                  connect_timeout=DEFAULT_CONNECT_TIMEOUT,
@@ -126,6 +127,8 @@ class RTCWebSocketClient(WebSocketClient):
         self._io_loop = io_loop or ioloop.IOLoop.current()
         self.ws_url = None
         self.auto_reconnet = False
+        self.last_active_time = 0
+        self.pending_hb = None
 
         super(RTCWebSocketClient, self).__init__(self._io_loop,
                                                  self.connect_timeout,
@@ -138,17 +141,24 @@ class RTCWebSocketClient(WebSocketClient):
 
         super(RTCWebSocketClient, self).connect(self.ws_url)
 
+    def send(self, msg):
+        super(RTCWebSocketClient, self).send(msg)
+        self.last_active_time = time.time()
+
     def on_message(self, msg):
         print'on_message msg=', msg
-        self._io_loop.call_later(self.heartbeat_interval_in_secs,
-                                 functools.partial(self.send, self.hb_msg))
+        self.last_active_time = time.time()
 
     def on_connection_success(self):
         print('Connected!')
         self.send(self.msg)
+        self.last_active_time = time.time()
+        self.send_heartbeat()
 
     def on_connection_close(self, reason):
         print('Connection closed reason=%s' % (reason,))
+        self.pending_hb and self._io_loop.remove_timeout(self.pending_hb)
+
         self.reconnect()
 
     def reconnect(self):
@@ -156,6 +166,15 @@ class RTCWebSocketClient(WebSocketClient):
         if not self.is_connected() and self.auto_reconnet:
             self._io_loop.call_later(self.reconnect_interval,
                                      super(RTCWebSocketClient, self).connect, self.ws_url)
+
+    def send_heartbeat(self):
+        if self.is_connected():
+            now = time.time()
+            if (now > self.last_active_time + self.heartbeat_interval):
+                self.last_active_time = now
+                self.send(self.hb_msg)
+
+            self.pending_hb = self._io_loop.call_later(self.heartbeat_interval, self.send_heartbeat)
 
 
 def main():
